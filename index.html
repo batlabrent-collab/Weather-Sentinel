@@ -11501,8 +11501,21 @@ function priorityOf(feature) {
   return (config.eventStyles[ev] || config.eventStyles.DEFAULT).priority;
 }
 
+// True when the user has set both lat and lon for the Audible Alert Area.
+// Used by alertWithinArea() and the ticker to decide what to show: if the
+// ring isn't configured, we DON'T blast every CONUS alert at the user -
+// that turns the ticker into a noisy firehose with alerts hundreds or
+// thousands of miles from them. Instead, show nothing until they set a ring.
+function audibleAreaConfigured() {
+  return Number.isFinite(config.area?.lat) && Number.isFinite(config.area?.lon);
+}
+
 function alertWithinArea(feature) {
-  if (config.area.lat == null || config.area.lon == null) return true; // no filter set: alarm on all
+  // No ring configured: return false, NOT true. Returning true would mean
+  // "everything passes" and the ticker, sounds, push, and feed all suddenly
+  // include alerts in Colorado, Montana, Maine. The audible alert area is
+  // by definition opt-in — without one, there's no "area" to be in.
+  if (!audibleAreaConfigured()) return false;
   const center = L.latLng(config.area.lat, config.area.lon);
   const radiusMeters = config.area.radiusMi * 1609.344;
   // Test if any point of the polygon is within radius (approx — fast)
@@ -11552,7 +11565,14 @@ function updateAlertTicker(features) {
     .sort((a, b) => priorityOf(b) - priorityOf(a));
 
   if (sorted.length === 0) {
-    track.innerHTML = `<span class="tk-clear">ALL CLEAR — NO ACTIVE ALERTS IN AUDIBLE AREA</span>`;
+    if (!audibleAreaConfigured()) {
+      // Distinguish "you haven't set up the area yet" from "your area is
+      // quiet" so a new user knows what to do instead of staring at an
+      // empty ticker assuming everything's fine.
+      track.innerHTML = `<span class="tk-clear" style="color:var(--text-faint)">SET AUDIBLE ALERT AREA IN CONFIG TO RECEIVE LOCAL ALERTS</span>`;
+    } else {
+      track.innerHTML = `<span class="tk-clear">ALL CLEAR — NO ACTIVE ALERTS IN AUDIBLE AREA</span>`;
+    }
     track.style.animationDuration = "30s";
     return;
   }
@@ -11616,15 +11636,16 @@ function renderAlertFeed(features) {
   // Filter to alerts inside the user's Audible Alert Area ring. Same filter
   // used by the EAM ticker, sounds, and push - keeps the feed focused on
   // local events rather than the firehose of every CONUS alert. If no ring
-  // is configured (lat/lon null), alertWithinArea returns true for all.
+  // is configured, alertWithinArea returns false for all (opt-in semantics).
   const inArea = (features || []).filter(f => alertWithinArea(f));
   if (inArea.length === 0) {
     const empty = document.createElement("div");
-    empty.style.cssText = "padding: 12px; font-size: 11px; color: var(--text-faint); text-align: center; font-family: var(--mono); letter-spacing: 0.04em;";
-    const ringSet = (config.area.lat != null && config.area.lon != null);
-    empty.textContent = ringSet
-      ? "NO ACTIVE ALERTS IN AUDIBLE AREA"
-      : "NO ACTIVE ALERTS";
+    empty.style.cssText = "padding: 12px; font-size: 11px; color: var(--text-faint); text-align: center; font-family: var(--mono); letter-spacing: 0.04em; line-height: 1.6;";
+    if (!audibleAreaConfigured()) {
+      empty.innerHTML = "AUDIBLE ALERT AREA NOT SET<br>Configure your location in CONFIG → Audible Alert Area";
+    } else {
+      empty.textContent = "NO ACTIVE ALERTS IN AUDIBLE AREA";
+    }
     el.appendChild(empty);
     return;
   }
