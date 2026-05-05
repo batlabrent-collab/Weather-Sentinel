@@ -1,2 +1,2 @@
 # Weather-Sentinel
-Cedar Hill — NEXRAD Weather Sentinel
+Cedar Hill — NEXRAD Weather Sentinel.
