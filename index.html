@@ -1009,7 +1009,7 @@ input[type="file"] { display: none; }
 <header id="topbar">
   <div class="brand">
     <span>CEDAR HILL GEOSPATIAL DEFENSE NETWORK</span>
-    <span class="version">v.94</span>
+    <span class="version">v.95</span>
   </div>
   <div class="clock" id="clock">--:-- UTC</div>
   <div class="alert-ticker" id="alert-ticker" title="Active NWS alerts wire">
@@ -10498,6 +10498,30 @@ function refreshRadar() {
   radarLayer.redraw();
 }
 
+// What the periodic refresh interval actually calls. (v.95)
+// refreshRadar() only redraws the LIVE static layer. When the player is FROZEN
+// on the latest archived frame, that live layer isn't what's on screen, so the
+// old direct setInterval(refreshRadar, ...) silently did nothing to the frame
+// the operator was watching. It only renewed on a manual fast-forward click.
+// Here: if we're frozen on the genuine latest frame (and not playing, not mid-
+// load), re-run the same fetch-and-show-newest path the fast-forward button
+// uses, silently (no toast spam every cycle). A deliberately parked OLDER frame
+// (animationFrame not at the end) is left alone, and LIVE mode still just
+// redraws the live layer as before.
+function radarAutoRefresh() {
+  const parkedAtLatest =
+    playerState === STATE_FROZEN &&
+    animationTimer === null &&
+    !state.loopLoadInFlight &&
+    animationLayers.length > 0 &&
+    animationFrame === animationLayers.length - 1;
+  if (parkedAtLatest) {
+    fastForward({ silent: true });
+    return;
+  }
+  refreshRadar();
+}
+
 // ----------- ANIMATION (radar loop) -----------------------------------------
 // State machine: LIVE (auto-refreshing static layer), PLAYING (looping through
 // archived frames), FROZEN (stopped on a specific archived frame).
@@ -10512,6 +10536,11 @@ let animationLayers = [];
 let animationFrame = 0;
 let animationTimer = null;
 let animationProductUsed = "N0B";
+// Handle for the periodic radar refresh interval. Stored so the CONFIG
+// refresh-seconds control can tear it down and rebuild it on change instead
+// of the old behavior, where the interval was created once at startup and a
+// new value never took effect until a full page reload. (v.95)
+let radarRefreshTimer = null;
 
 function pad2(n) { return String(n).padStart(2, "0"); }
 
@@ -10806,8 +10835,12 @@ async function tryShowFrame(idx, wasLive, callback, attempts = 0) {
   callback(true, idx);
 }
 
-async function fastForward() {
-  console.log(`[FF] click. state=${playerState}, timer=${animationTimer ? "running" : "null"}, layers=${animationLayers.length}, inFlight=${!!state.loopLoadInFlight}`);
+async function fastForward(opts) {
+  // opts.silent suppresses the user-facing toasts so the v.95 auto-renew can
+  // reuse this path every refresh cycle without spamming. Manual button clicks
+  // pass a MouseEvent here (silent stays false), so they behave exactly as before.
+  const silent = !!(opts && opts.silent);
+  console.log(`[FF] ${silent ? "auto" : "click"}. state=${playerState}, timer=${animationTimer ? "running" : "null"}, layers=${animationLayers.length}, inFlight=${!!state.loopLoadInFlight}`);
   // Re-entrancy guard: same reasoning as startAnimation. Without this, double-
   // clicking the fast-forward button while a prior load is still resolving
   // creates two parallel loads that race into broken state.
@@ -10823,7 +10856,7 @@ async function fastForward() {
   // Always refresh the scan list — a new NEXRAD volume scan may have arrived
   // since the loop was originally loaded. Without this, "Latest" can be
   // several minutes stale.
-  toast("Loading latest scan…");
+  if (!silent) toast("Loading latest scan…");
   let ok = false;
   try {
     ok = await loadAnimationFrames();
@@ -10854,7 +10887,7 @@ async function fastForward() {
     $("radar-status-site").textContent = `${prefix} — ${label} @ ${timestampLabel(target._timestamp)}`;
     playerState = STATE_FROZEN;
     setPlayButtonState(false);
-    toast(stepsBack === 0 ? "Paused at latest frame" : `Latest unavailable — paused ${stepsBack} scan${stepsBack > 1 ? 's' : ''} back`);
+    if (!silent) toast(stepsBack === 0 ? "Paused at latest frame" : `Latest unavailable — paused ${stepsBack} scan${stepsBack > 1 ? 's' : ''} back`);
     // Cells reflect realtime storm activity; safe to show on either the actual
     // latest frame or the fallback (radar may be a few minutes stale, but the
     // cell positions are now). Hiding them only during playback.
@@ -12870,7 +12903,14 @@ $("alert-fill-slider").addEventListener("input", e => {
   if (state.alertLayer) state.alertLayer.setStyle(styleForFeature);
   saveConfig();
 });
-$("radar-refresh").addEventListener("change", e => { config.radarRefreshSec = parseInt(e.target.value) || 120; saveConfig(); });
+$("radar-refresh").addEventListener("change", e => {
+  config.radarRefreshSec = parseInt(e.target.value) || 120;
+  saveConfig();
+  // Apply the new cadence right away. (v.95) Previously the interval was built
+  // once at startup, so a changed value here did nothing until a page reload.
+  if (radarRefreshTimer) clearInterval(radarRefreshTimer);
+  radarRefreshTimer = setInterval(radarAutoRefresh, config.radarRefreshSec * 1000);
+});
 
 // Display controls (basemap brightness, radar smoothing)
 $("basemap-brightness-slider").addEventListener("input", e => {
@@ -14333,7 +14373,7 @@ applyStormCellState(true);
 startSpcRefresh();
 applyLayerVisibility();
 setInterval(fetchAlerts, config.alertPollSec * 1000);
-setInterval(refreshRadar, config.radarRefreshSec * 1000);
+radarRefreshTimer = setInterval(radarAutoRefresh, config.radarRefreshSec * 1000);
 
 // Show audio enable prompt if audio is off (first run)
 if (!config.audioEnabled) $("audio-prompt").classList.remove("hidden");
